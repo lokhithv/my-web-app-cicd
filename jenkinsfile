@@ -3,8 +3,8 @@ pipeline {
     
     environment {
         AWS_REGION = 'ap-south-2'
-        AWS_ACCOUNT_ID = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
-        ECR_REGISTRY = "922754696039.dkr.ecr.ap-south-2.amazonaws.com"
+        AWS_ACCOUNT_ID = '922754696039'
+        ECR_REGISTRY = '922754696039.dkr.ecr.ap-south-2.amazonaws.com'
         ECR_REPOSITORY = 'my-web-app'
         IMAGE_TAG = "${BUILD_NUMBER}"
         AWS_CREDENTIALS = 'aws-credentials'
@@ -23,13 +23,13 @@ pipeline {
             }
         }
         
-        stage('Build Application') {
+        stage('Install Dependencies') {
             steps {
                 script {
                     echo '========================================='
-                    echo '=== Stage 2: Building Application with Maven ==='
+                    echo '=== Stage 2: Installing Node.js Dependencies ==='
                     echo '========================================='
-                    sh 'mvn clean package -DskipTests'
+                    sh 'npm install'
                 }
             }
         }
@@ -40,12 +40,19 @@ pipeline {
                     echo '========================================='
                     echo '=== Stage 3: Running Unit Tests ==='
                     echo '========================================='
-                    sh 'mvn test'
+                    sh 'npm test'
                 }
             }
             post {
                 always {
-                    junit '**/target/surefire-reports/*.xml'
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'coverage',
+                        reportFiles: 'index.html',
+                        reportName: 'Code Coverage Report'
+                    ])
                 }
             }
         }
@@ -100,14 +107,14 @@ pipeline {
                             echo "Logging into ECR for deployment..."
                             aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
                             
-                            echo "Stopping old container (if exists)..."
+                            echo "Stopping old container..."
                             docker stop ${CONTAINER_NAME} || true
                             docker rm ${CONTAINER_NAME} || true
                             
                             echo "Removing old images..."
                             docker rmi ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest || true
                             
-                            echo "Pulling latest image from ECR..."
+                            echo "Pulling latest image..."
                             docker pull ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
                             
                             echo "Starting new container..."
@@ -116,12 +123,13 @@ pipeline {
                                 -p ${HOST_PORT}:8080 \
                                 --restart unless-stopped \
                                 -e ENVIRONMENT=production \
+                                -e PORT=8080 \
                                 ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
                             
                             echo "Waiting for application to start..."
                             sleep 15
                             
-                            echo "Checking if container is running..."
+                            echo "Container started successfully!"
                             docker ps | grep ${CONTAINER_NAME}
                         """
                     }
@@ -146,12 +154,12 @@ pipeline {
                                 echo "✅ Application is healthy and running!"
                                 exit 0
                             fi
-                            echo "Waiting for application to be ready..."
+                            echo "Waiting for application..."
                             sleep 5
                             attempt=\$((attempt + 1))
                         done
                         
-                        echo "❌ Application health check failed after \$max_attempts attempts"
+                        echo "❌ Health check failed"
                         exit 1
                     """
                 }
@@ -162,12 +170,11 @@ pipeline {
             steps {
                 script {
                     echo '========================================='
-                    echo '=== Stage 8: Cleaning Up Old Images ==='
+                    echo '=== Stage 8: Cleaning Up ==='
                     echo '========================================='
                     sh """
                         echo "Removing dangling images..."
                         docker image prune -f
-                        
                         echo "Cleanup complete!"
                     """
                 }
@@ -181,11 +188,11 @@ pipeline {
             echo '=== ✅ PIPELINE COMPLETED SUCCESSFULLY! ==='
             echo '========================================='
             emailext (
-                subject: "✅ SUCCESS: Jenkins Pipeline - ${env.JOB_NAME} - Build #${env.BUILD_NUMBER}",
+                subject: "✅ SUCCESS: Node.js Pipeline - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                 body: """
                     <html>
                     <body style="font-family: Arial, sans-serif;">
-                        <h2 style="color: #28a745;">✅ Pipeline Executed Successfully!</h2>
+                        <h2 style="color: #28a745;">✅ Node.js Pipeline Successful!</h2>
                         <hr>
                         <table style="border-collapse: collapse; width: 100%;">
                             <tr>
@@ -193,16 +200,8 @@ pipeline {
                                 <td style="padding: 8px; border: 1px solid #ddd;">${env.JOB_NAME}</td>
                             </tr>
                             <tr>
-                                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Build Number:</strong></td>
-                                <td style="padding: 8px; border: 1px solid #ddd;">${env.BUILD_NUMBER}</td>
-                            </tr>
-                            <tr>
-                                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Build Status:</strong></td>
-                                <td style="padding: 8px; border: 1px solid #ddd; color: #28a745;"><strong>SUCCESS</strong></td>
-                            </tr>
-                            <tr>
-                                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Image Tag:</strong></td>
-                                <td style="padding: 8px; border: 1px solid #ddd;">${IMAGE_TAG}</td>
+                                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Build:</strong></td>
+                                <td style="padding: 8px; border: 1px solid #ddd;">#${env.BUILD_NUMBER}</td>
                             </tr>
                             <tr>
                                 <td style="padding: 8px; border: 1px solid #ddd;"><strong>Application URL:</strong></td>
@@ -210,108 +209,7 @@ pipeline {
                                     <a href="${APP_URL}">${APP_URL}</a>
                                 </td>
                             </tr>
-                            <tr>
-                                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Duration:</strong></td>
-                                <td style="padding: 8px; border: 1px solid #ddd;">${currentBuild.durationString}</td>
-                            </tr>
                         </table>
-                        <hr>
-                        <p><strong>Deployment Details:</strong></p>
-                        <ul>
-                            <li>Docker Image: ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}</li>
-                            <li>Container Name: ${CONTAINER_NAME}</li>
-                            <li>Port: ${HOST_PORT}</li>
-                        </ul>
-                        <p>
-                            <a href="${env.BUILD_URL}" style="background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
-                                View Console Output
-                            </a>
-                        </p>
-                        <hr>
-                        <p style="color: #666; font-size: 12px;">
-                            This email was sent automatically by Jenkins CI/CD Pipeline.<br>
-                            Timestamp: ${new Date()}
-                        </p>
-                    </body>
-                    </html>
-                """,
-                to: 'lokhi123@gmail.com',
-                mimeType: 'text/html',
-                attachLog: true
-            )
-        }
-        
-        failure {
-            echo '========================================='
-            echo '=== ❌ PIPELINE FAILED! ==='
-            echo '========================================='
-            emailext (
-                subject: "❌ FAILURE: Jenkins Pipeline - ${env.JOB_NAME} - Build #${env.BUILD_NUMBER}",
-                body: """
-                    <html>
-                    <body style="font-family: Arial, sans-serif;">
-                        <h2 style="color: #dc3545;">❌ Pipeline Execution Failed!</h2>
-                        <hr>
-                        <table style="border-collapse: collapse; width: 100%;">
-                            <tr>
-                                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Project:</strong></td>
-                                <td style="padding: 8px; border: 1px solid #ddd;">${env.JOB_NAME}</td>
-                            </tr>
-                            <tr>
-                                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Build Number:</strong></td>
-                                <td style="padding: 8px; border: 1px solid #ddd;">${env.BUILD_NUMBER}</td>
-                            </tr>
-                            <tr>
-                                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Build Status:</strong></td>
-                                <td style="padding: 8px; border: 1px solid #ddd; color: #dc3545;"><strong>FAILURE</strong></td>
-                            </tr>
-                            <tr>
-                                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Failed Stage:</strong></td>
-                                <td style="padding: 8px; border: 1px solid #ddd;">${env.STAGE_NAME}</td>
-                            </tr>
-                            <tr>
-                                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Duration:</strong></td>
-                                <td style="padding: 8px; border: 1px solid #ddd;">${currentBuild.durationString}</td>
-                            </tr>
-                        </table>
-                        <hr>
-                        <p><strong>Action Required:</strong></p>
-                        <ul>
-                            <li>Check the console output for error details</li>
-                            <li>Review the failed stage logs</li>
-                            <li>Fix the issue and trigger a new build</li>
-                        </ul>
-                        <p>
-                            <a href="${env.BUILD_URL}console" style="background-color: #dc3545; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
-                                View Console Output
-                            </a>
-                        </p>
-                        <hr>
-                        <p style="color: #666; font-size: 12px;">
-                            This email was sent automatically by Jenkins CI/CD Pipeline.<br>
-                            Timestamp: ${new Date()}
-                        </p>
-                    </body>
-                    </html>
-                """,
-                to: 'lokhi123@gmail.com',
-                mimeType: 'text/html',
-                attachLog: true
-            )
-        }
-        
-        unstable {
-            echo '========================================='
-            echo '=== ⚠️ PIPELINE UNSTABLE ==='
-            echo '========================================='
-            emailext (
-                subject: "⚠️ UNSTABLE: Jenkins Pipeline - ${env.JOB_NAME} - Build #${env.BUILD_NUMBER}",
-                body: """
-                    <html>
-                    <body style="font-family: Arial, sans-serif;">
-                        <h2 style="color: #ffc107;">⚠️ Pipeline Unstable</h2>
-                        <p>The build completed but some tests may have failed.</p>
-                        <p><strong>Build Number:</strong> ${env.BUILD_NUMBER}</p>
                         <p><a href="${env.BUILD_URL}">View Build Details</a></p>
                     </body>
                     </html>
@@ -321,11 +219,15 @@ pipeline {
             )
         }
         
+        failure {
+            emailext (
+                subject: "❌ FAILURE: Node.js Pipeline - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                body: "Build failed. Check console: ${env.BUILD_URL}console",
+                to: 'lokhi123@gmail.com'
+            )
+        }
+        
         always {
-            echo '========================================='
-            echo '=== Pipeline Execution Completed ==='
-            echo '========================================='
-            echo "Total Duration: ${currentBuild.durationString}"
             cleanWs()
         }
     }

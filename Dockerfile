@@ -1,11 +1,14 @@
-FROM maven:3.8.5-openjdk-17 AS build
-   WORKDIR /app
-   COPY pom.xml .
-   COPY src ./src
-   RUN mvn clean package -DskipTests
+# Build stage
+FROM node:18-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
 
-   FROM openjdk:17-jdk-slim
-   WORKDIR /app
-   COPY --from=build /app/target/*.jar app.jar
-   EXPOSE 8080
-   ENTRYPOINT ["java", "-jar", "app.jar"]
+# Production stage
+FROM node:18-alpine
+WORKDIR /app
+COPY --from=build /app/node_modules ./node_modules
+COPY . .
+EXPOSE 8080
+USER node
+CMD ["node", "server.js"]
